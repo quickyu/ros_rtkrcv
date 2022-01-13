@@ -48,9 +48,12 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-#add_message_files(
-#   FILES
-#)
+add_message_files(
+   FILES
+   epoch_time_msg.msg
+   ssr_msg.msg
+   corr_msg.msg
+)
 
 ## Generate services in the 'srv' folder
 # add_service_files(

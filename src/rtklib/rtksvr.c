@@ -48,6 +48,9 @@
 #define MIN_INT_RESET   30000   /* mininum interval of reset command (ms) */
 
 void publish_position(const sol_t *sol);
+void publish_measurement(obsd_t *obs, int n);
+void publish_ephemeris(eph_t *eph);
+void publish_corrections(ssr_t *ssr_data);
 
 /* write solution header to output stream ------------------------------------*/
 static void writesolhead(stream_t *stream, const solopt_t *solopt)
@@ -179,6 +182,8 @@ static void update_eph(rtksvr_t *svr, nav_t *nav, int ephsat, int ephset,
                 *eph3=*eph2; /* current ->previous */
                 *eph2=*eph1; /* received->current */
             }
+
+            publish_ephemeris(eph1);
         }
         svr->nmsg[index][1]++;
     }
@@ -637,6 +642,10 @@ static void *rtksvrthread(void *arg)
             if (!strstr(svr->rtk.opt.pppopt,"-DIS_FCB")) {
                 corr_phase_bias(obs.data,obs.n,&svr->nav);
             }
+
+            publish_corrections(svr->nav.ssr);
+            publish_measurement(obs.data, obs.n);
+
             /* rtk positioning */
             rtksvrlock(svr);
             rtkpos(&svr->rtk,obs.data,obs.n,&svr->nav);

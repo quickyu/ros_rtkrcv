@@ -2,6 +2,7 @@
 #include <gnss_comm/gnss_constant.hpp>
 #include "gnss_comm/gnss_ros.hpp"
 #include "gnss_comm/gnss_utility.hpp"
+#include "rtkrcv/corr_msg.h"
 #include "rtklib.h"
 
 constexpr char opt_file[] = "rtkrcv.conf";
@@ -99,6 +100,9 @@ static solopt_t solopt[2] = { {0} };
 static filopt_t filopt = { "" };  
 
 static ros::Publisher pos_pub;
+static ros::Publisher meas_pub;
+static ros::Publisher ephem_pub;
+static ros::Publisher ssr_pub;
 
 extern "C" void publish_position(const sol_t *sol)
 {
@@ -149,10 +153,170 @@ extern "C" void publish_position(const sol_t *sol)
    pos_pub.publish(pvt_msg);
 }
 
+static uint32_t satno_cvt(int satno)
+{
+   int prn;   
+   int sys = satsys(satno, &prn);
+
+   return gnss_comm::sat_no(sys, prn);
+}
+
+extern "C" void publish_measurement(obsd_t *obs, int n)
+{
+   gnss_comm::GnssMeasMsg gnss_meas_msg;
+
+   for (int i = 0; i< n; i++) {
+      gnss_comm::GnssObsMsg obs_msg;
+
+      int week = 0;
+      double tow = time2gpst(obs[i].time, &week);
+      obs_msg.time.week = week;
+      obs_msg.time.tow = tow;
+      obs_msg.sat = satno_cvt(obs[i].sat);
+      
+      int prn;   
+      int sys = satsys(obs[i].sat, &prn);
+
+      for (int n = 0; n < NFREQ; n++) {
+         obs_msg.freqs.push_back(code2freq(sys, obs[i].code[n], 0));
+         obs_msg.CN0.push_back(obs[i].SNR[n]*0.001);
+         obs_msg.LLI.push_back(obs[i].LLI[n]&LLI_SLIP);
+         obs_msg.code.push_back(obs[i].code[n]);
+         obs_msg.psr.push_back(obs[i].P[n]);
+         obs_msg.psr_std.push_back(0);
+         obs_msg.cp.push_back(obs[i].L[n]);
+         obs_msg.cp_std.push_back(0);
+         obs_msg.dopp.push_back(obs[i].D[n]);
+         obs_msg.dopp_std.push_back(0);
+
+         uint8_t status = (obs[i].LLI[n]&LLI_HALFC ? 4 : 0) | (obs[i].LLI[n]&LLI_HALFS ? 8 : 0) | 3;
+         obs_msg.status.push_back(status);
+      }
+
+      gnss_meas_msg.meas.push_back(obs_msg);
+   }
+
+   meas_pub.publish(gnss_meas_msg);
+}
+
+extern "C" void publish_ephemeris(eph_t *eph)
+{
+   gnss_comm::GnssEphemMsg ephem_msg;
+
+   int week;
+   double tow;
+
+   ephem_msg.sat = satno_cvt(eph->sat);
+
+   tow = time2gpst(eph->ttr, &week);
+   ephem_msg.ttr.week = week;
+   ephem_msg.ttr.tow = tow;
+
+   tow = time2gpst(eph->toe, &week);
+   ephem_msg.toe.week = week;
+   ephem_msg.toe.tow = tow;
+
+   tow = time2gpst(eph->toc, &week);
+   ephem_msg.toc.week = week;
+   ephem_msg.toc.tow = tow;
+
+   ephem_msg.toe_tow = eph->toes;
+   ephem_msg.week = eph->week;
+   ephem_msg.iode = eph->iode;
+   ephem_msg.iodc = eph->iodc;
+   ephem_msg.health = eph->svh;
+   ephem_msg.code = eph->code;
+   ephem_msg.ura = eph->sva;
+   ephem_msg.A = eph->A;
+   ephem_msg.e = eph->e;
+   ephem_msg.i0 = eph->i0;
+   ephem_msg.omg = eph->omg;
+   ephem_msg.OMG0 = eph->OMG0;
+   ephem_msg.M0 = eph->M0;
+   ephem_msg.delta_n = eph->deln;
+   ephem_msg.OMG_dot = eph->OMGd;
+   ephem_msg.i_dot = eph->idot;
+   ephem_msg.cuc = eph->cuc;
+   ephem_msg.cus = eph->cus;
+   ephem_msg.crc = eph->crc;
+   ephem_msg.crs = eph->crs;
+   ephem_msg.cic = eph->cic;
+   ephem_msg.cis = eph->cis;
+   ephem_msg.af0 = eph->f0;
+   ephem_msg.af1 = eph->f1;
+   ephem_msg.af2 = eph->f2;
+   ephem_msg.tgd0 = eph->tgd[0];
+   ephem_msg.tgd1 = eph->tgd[1];
+   ephem_msg.A_dot = eph->Adot;
+   ephem_msg.n_dot = eph->ndot;
+
+   ephem_pub.publish(ephem_msg);
+}
+
+extern "C" void publish_corrections(ssr_t *ssr_data)
+{
+   rtkrcv::corr_msg corrs_ros_msg;
+
+   for (int i = 0; i < MAXSAT; i++) {
+      ssr_t *ssr = ssr_data + i; 
+      if (!ssr->t0[0].time) 
+         continue;
+
+      rtkrcv::ssr_msg ssr_ros_msg; 
+
+      char satid[32];
+      satno2id(i+1, satid);
+
+      ssr_ros_msg.sat = std::string(satid);
+
+      for (int n = 0; n < 6; n++) {
+         int week;
+         double tow;
+         tow = time2gpst(ssr->t0[n], &week);
+
+         ssr_ros_msg.t0[n].week = week;
+         ssr_ros_msg.t0[n].tow = tow;
+      }
+
+      for (int n = 0; n < 6; n++) {
+         ssr_ros_msg.udi[n] = ssr->udi[n];
+      }
+
+      for (int n = 0; n < 6; n++) {
+         ssr_ros_msg.iod_ssr[n] = ssr->iod[n];
+      }
+
+      ssr_ros_msg.iode = ssr->iode;
+      ssr_ros_msg.ura = ssr->ura;
+
+      for (int n = 0; n < 3; n++) {
+         ssr_ros_msg.orbit_corr[n] = ssr->deph[n];
+      }
+
+      for (int n = 0; n < 3; n++) {
+         ssr_ros_msg.orbit_corr[n+3] = ssr->ddeph[n];
+      }
+
+      for (int n = 0; n < 3; n++) {
+         ssr_ros_msg.clock_corr[n] = ssr->dclk[n];
+      }
+
+      ssr_ros_msg.hrclk = ssr->hrclk;
+
+      for (int n = 0; n < MAXCODE; n++) {
+         ssr_ros_msg.code_bias[n] = ssr->cbias[n];
+      }
+
+      corrs_ros_msg.corr_data.push_back(ssr_ros_msg);
+   }
+
+   ssr_pub.publish(corrs_ros_msg);
+}
+
 static int start_rtklib()
 {
    double npos[3] = { 0, 0, 0 };
-   char *ropts[] = { "", "", "" };
+   char *ropts[] = { "-EPHALL", "", "" };
    char *paths[] = {
       strpath[0], strpath[1], strpath[2], strpath[3], strpath[4], strpath[5],
       strpath[6], strpath[7]
@@ -189,6 +353,9 @@ int main(int argc, char **argv)
    ros::NodeHandle node;
 
    pos_pub = node.advertise<gnss_comm::GnssPVTSolnMsg>("pvt", 100);
+   meas_pub = node.advertise<gnss_comm::GnssMeasMsg>("range_meas", 100);
+   ephem_pub = node.advertise<gnss_comm::GnssEphemMsg>("ephem", 100);
+   ssr_pub = node.advertise<rtkrcv::corr_msg>("corrections", 100);
 
    std::string config_file, output_dir;
    node.getParam("rtkrcv/config_file", config_file);
